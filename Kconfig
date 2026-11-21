@@ -1,0 +1,10 @@
+
+config ZMK_INPUT_PROCESSOR_ANGLE
+    bool "Enable trackball angle correction processor"
+    depends on INPUT
+    default n
+    help
+      Enable a custom ZMK input processor that compensates
+      for small trackball sensor mounting angle errors.
+      The processor will use fixed-point calculations
+      and preserve fractional movement between reports.
