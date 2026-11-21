@@ -1,0 +1,8 @@
+
+/ {
+    /omit-if-no-ref/ zip_angle: zip_angle {
+        compatible = "zmk,input-processor-angle";
+        #input-processor-cells = <1>;
+        status = "okay";
+    };
+};
