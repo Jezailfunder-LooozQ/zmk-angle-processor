@@ -1,0 +1,12 @@
+
+# SPDX-License-Identifier: MIT
+
+description: >
+  ZMK input processor for correcting trackball sensor
+  mounting angle using fixed-point coordinate rotation.
+
+compatible: "zmk,input-processor-angle"
+
+include: ip_one_param.yaml
+
+properties: {}
