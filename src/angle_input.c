@@ -4,7 +4,6 @@
  *
  * PMW3610 -> XY Rotation -> Virtual Input Device
  *
- * First test version:
  * Clockwise 10-degree compensation.
  *
  * SPDX-License-Identifier: MIT
@@ -18,6 +17,8 @@
 #include <zephyr/input/input.h>
 #include <zephyr/logging/log.h>
 
+#include <errno.h>
+
 #include "angle_math.h"
 
 LOG_MODULE_REGISTER(
@@ -26,8 +27,13 @@ LOG_MODULE_REGISTER(
 );
 
 /*
- * Runtime state for each virtual device.
+ * Initialize after the PMW3610 driver.
+ *
+ * PMW3610 currently initializes at
+ * POST_KERNEL priority 33.
  */
+#define ANGLE_INPUT_INIT_PRIORITY 50
+
 struct angle_input_data {
     int32_t pending_x;
     int32_t pending_y;
@@ -35,23 +41,13 @@ struct angle_input_data {
     struct angle_remainder remainder;
 };
 
-/*
- * Configuration for each virtual device.
- */
 struct angle_input_config {
     const struct device *source;
     int32_t angle_deg;
 };
 
 /*
- * Receive events from the physical sensor.
- *
- * PMW3610 reports X and Y separately.
- * The Y event normally carries sync=true.
- *
- * We accumulate both axes, rotate them,
- * and report a new synchronized XY pair
- * using the virtual device identity.
+ * Receive X/Y movement from the sensor.
  */
 static void angle_input_callback(
     struct input_event *event,
@@ -79,8 +75,7 @@ static void angle_input_callback(
     }
 
     /*
-     * Wait until the complete motion report
-     * has been received.
+     * Wait for the synchronized report.
      */
     if (!event->sync) {
         return;
@@ -91,7 +86,7 @@ static void angle_input_callback(
 
     /*
      * Clockwise 10-degree rotation.
-     * Fractional movement is accumulated.
+     * Preserve fractional movement.
      */
     angle_rotate_10(
         data->pending_x,
@@ -105,15 +100,8 @@ static void angle_input_callback(
     data->pending_y = 0;
 
     /*
-     * Forward corrected motion.
-     *
-     * Use the virtual device as the source
-     * so ZMK can listen to corrected events
-     * without listening to the physical
-     * sensor directly.
-     *
-     * K_NO_WAIT avoids blocking the input
-     * callback when threaded input is used.
+     * Forward corrected X/Y values
+     * using the virtual device.
      */
     int ret_x = input_report_rel(
         virtual_dev,
@@ -139,7 +127,7 @@ static void angle_input_callback(
 }
 
 /*
- * Virtual device initialization.
+ * Initialize virtual input device.
  */
 static int angle_input_init(
     const struct device *dev)
@@ -161,11 +149,7 @@ static int angle_input_init(
 }
 
 /*
- * Instantiate a virtual input device
- * for each enabled Devicetree node.
- *
- * The first version supports exactly
- * 10 degrees to match angle_math.h.
+ * Instantiate virtual input devices.
  */
 #define ANGLE_INPUT_DEFINE(n)                             \
                                                          \
@@ -192,7 +176,7 @@ static int angle_input_init(
         &angle_input_data_##n,                           \
         &angle_input_config_##n,                         \
         POST_KERNEL,                                     \
-        CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,             \
+        ANGLE_INPUT_INIT_PRIORITY,                       \
         NULL                                             \
     );                                                   \
                                                          \
