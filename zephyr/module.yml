@@ -1,0 +1,6 @@
+
+name: zmk-angle-processor
+
+build:
+  cmake: .
+  kconfig: Kconfig
