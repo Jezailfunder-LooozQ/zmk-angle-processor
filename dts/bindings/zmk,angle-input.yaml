@@ -1,0 +1,22 @@
+
+# SPDX-License-Identifier: MIT
+
+description: >
+  Virtual input device that receives XY movement from
+  a physical trackball sensor and applies angle
+  correction before forwarding the movement to ZMK.
+
+compatible: "zmk,angle-input"
+
+properties:
+  source:
+    type: phandle
+    required: true
+    description: Physical trackball input device
+
+  angle-deg:
+    type: int
+    default: 10
+    description: >
+      Clockwise correction angle in screen coordinates,
+      measured in degrees.
