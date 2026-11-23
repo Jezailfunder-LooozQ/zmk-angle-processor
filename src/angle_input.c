@@ -34,7 +34,7 @@ LOG_MODULE_REGISTER(zmk_angle_input, LOG_LEVEL_INF);
  * 0 = disabled
  * 10 = maximum horizontal suppression
  */
-#define VERTICAL_SNAP_STRENGTH 6
+#define VERTICAL_SNAP_STRENGTH 7
 
 /*
  * The sensor coordinates are rotated first.
