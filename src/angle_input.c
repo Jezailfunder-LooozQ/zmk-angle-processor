@@ -2,9 +2,10 @@
 /*
  * ZMK Trackball Angle Input Device
  *
- * PMW3610 -> XY Rotation -> Virtual Input Device
- *
- * Clockwise 10-degree compensation.
+ * PMW3610
+ *   -> 10-degree rotation
+ *   -> Vertical Angle Snapping
+ *   -> Virtual Input Device
  *
  * SPDX-License-Identifier: MIT
  */
@@ -24,19 +25,62 @@
 
 LOG_MODULE_REGISTER(zmk_angle_input, LOG_LEVEL_INF);
 
-/*
- * The PMW3610 driver uses
- * CONFIG_INPUT_INIT_PRIORITY (default 90).
- *
- * Initialize this virtual device afterward.
- */
 #define ANGLE_INPUT_INIT_PRIORITY 95
+
+/*
+ * Vertical snapping settings.
+ *
+ * Strength: 0 to 10
+ * 0 = disabled
+ * 10 = maximum horizontal suppression
+ */
+#define VERTICAL_SNAP_STRENGTH 6
+
+/*
+ * The sensor coordinates are rotated first.
+ *
+ * The ZMK listener later applies:
+ * XY_SWAP | X_INVERT
+ *
+ * Therefore:
+ * rotated X -> screen vertical movement
+ * rotated Y -> screen horizontal movement
+ *
+ * To straighten vertical movement,
+ * suppress small rotated-Y deviations.
+ */
+
+/*
+ * Direction tracking uses a short
+ * exponential moving average.
+ */
+#define SNAP_HISTORY_WEIGHT 3
+#define SNAP_HISTORY_DIVISOR 4
+
+/*
+ * Require dominant vertical motion.
+ *
+ * Vertical magnitude must exceed
+ * horizontal magnitude by 3:1.
+ */
+#define SNAP_DIRECTION_RATIO 3
+
+/*
+ * Minimum accumulated activity
+ * before snapping can engage.
+ */
+#define SNAP_MIN_ACTIVITY 12
 
 struct angle_input_data {
     int32_t pending_x;
     int32_t pending_y;
 
     struct angle_remainder remainder;
+
+    int32_t vertical_history;
+    int32_t horizontal_history;
+
+    int32_t horizontal_fraction;
 };
 
 struct angle_input_config {
@@ -44,11 +88,98 @@ struct angle_input_config {
     int32_t angle_deg;
 };
 
+static int32_t snap_abs(int32_t value)
+{
+    if (value >= 0) {
+        return value;
+    }
+
+    if (value == INT32_MIN) {
+        return INT32_MAX;
+    }
+
+    return -value;
+}
+
 /*
- * Receive movement events from PMW3610.
+ * Apply vertical-only snapping.
  *
- * Accumulate X and Y until a synchronized
- * report is received.
+ * X is the future screen-vertical axis.
+ * Y is the future screen-horizontal axis.
+ *
+ * Normal horizontal and diagonal
+ * movements should remain unchanged.
+ */
+static void apply_vertical_snapping(
+    struct angle_input_data *data,
+    int32_t *x,
+    int32_t *y)
+{
+    int32_t vertical = snap_abs(*x);
+    int32_t horizontal = snap_abs(*y);
+
+    /*
+     * Update directional history.
+     */
+    data->vertical_history =
+        (data->vertical_history *
+         SNAP_HISTORY_WEIGHT) /
+         SNAP_HISTORY_DIVISOR +
+         vertical;
+
+    data->horizontal_history =
+        (data->horizontal_history *
+         SNAP_HISTORY_WEIGHT) /
+         SNAP_HISTORY_DIVISOR +
+         horizontal;
+
+    /*
+     * Decide whether movement is
+     * sufficiently vertical.
+     */
+    int64_t activity =
+        (int64_t)data->vertical_history +
+        data->horizontal_history;
+
+    bool vertical_dominant =
+        data->vertical_history > 0 &&
+        activity >= SNAP_MIN_ACTIVITY &&
+        (int64_t)data->horizontal_history *
+            SNAP_DIRECTION_RATIO <=
+        data->vertical_history;
+
+    if (!vertical_dominant ||
+        VERTICAL_SNAP_STRENGTH == 0) {
+
+        /*
+         * Exit snapping immediately.
+         * Do not carry fractional
+         * suppression into other motions.
+         */
+        data->horizontal_fraction = 0;
+        return;
+    }
+
+    /*
+     * Preserve 4/10 of horizontal motion
+     * at snapping strength 6/10.
+     *
+     * Fractional output is accumulated
+     * to prevent integer truncation
+     * from producing excessive dead zones.
+     */
+    int32_t numerator =
+        *y * (10 - VERTICAL_SNAP_STRENGTH) +
+        data->horizontal_fraction;
+
+    *y = numerator / 10;
+
+    data->horizontal_fraction =
+        numerator - (*y * 10);
+}
+
+/*
+ * Receive PMW3610 movement.
  */
 static void angle_input_callback(
     struct input_event *event,
@@ -60,7 +191,8 @@ static void angle_input_callback(
         return;
     }
 
-    struct angle_input_data *data = virtual_dev->data;
+    struct angle_input_data *data =
+        virtual_dev->data;
 
     if (event->type != INPUT_EV_REL) {
         return;
@@ -79,9 +211,6 @@ static void angle_input_callback(
         return;
     }
 
-    /*
-     * Wait for the complete XY report.
-     */
     if (!event->sync) {
         return;
     }
@@ -90,8 +219,8 @@ static void angle_input_callback(
     int32_t corrected_y = 0;
 
     /*
-     * Clockwise 10-degree rotation.
-     * Fractional movement is accumulated.
+     * Step 1: Existing clockwise
+     * 10-degree correction.
      */
     angle_rotate_10(
         data->pending_x,
@@ -105,11 +234,20 @@ static void angle_input_callback(
     data->pending_y = 0;
 
     /*
-     * Forward corrected coordinates using
-     * the virtual input device.
+     * Step 2: New vertical-only snapping.
+     */
+    apply_vertical_snapping(
+        data,
+        &corrected_x,
+        &corrected_y
+    );
+
+    /*
+     * Step 3: Forward to virtual device.
      *
-     * X: sync = false
-     * Y: sync = true
+     * Original ZMK listener still handles
+     * XY transformation, temporary layer,
+     * and Response Curve processing.
      */
     int ret_x = input_report_rel(
         virtual_dev,
@@ -129,7 +267,7 @@ static void angle_input_callback(
 
     if (ret_x < 0 || ret_y < 0) {
         LOG_WRN(
-            "Failed to forward corrected XY movement: X=%d Y=%d",
+            "Motion forwarding failed: X=%d Y=%d",
             ret_x,
             ret_y
         );
@@ -137,22 +275,23 @@ static void angle_input_callback(
 }
 
 /*
- * Initialize the virtual input device
- * after its physical PMW3610 source.
+ * Initialize virtual input device.
  */
 static int angle_input_init(
     const struct device *dev)
 {
-    const struct angle_input_config *config = dev->config;
+    const struct angle_input_config *config =
+        dev->config;
 
     if (!device_is_ready(config->source)) {
-        LOG_ERR("PMW3610 source sensor not ready");
+        LOG_ERR("PMW3610 source not ready");
         return -ENODEV;
     }
 
     LOG_INF(
-        "Virtual trackball initialized, correction=%d degrees",
-        config->angle_deg
+        "Trackball ready: angle=%d, vertical snap=%d/10",
+        config->angle_deg,
+        VERTICAL_SNAP_STRENGTH
     );
 
     return 0;
@@ -160,9 +299,6 @@ static int angle_input_init(
 
 /*
  * Create virtual input devices.
- *
- * Current implementation supports
- * clockwise 10-degree correction only.
  */
 #define ANGLE_INPUT_DEFINE(n)                             \
                                                          \
