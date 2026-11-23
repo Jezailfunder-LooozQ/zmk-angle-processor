@@ -25,16 +25,13 @@
 LOG_MODULE_REGISTER(zmk_angle_input, LOG_LEVEL_INF);
 
 /*
- * PMW3610 initializes at POST_KERNEL priority 33
- * in the current build.
+ * The PMW3610 driver uses
+ * CONFIG_INPUT_INIT_PRIORITY (default 90).
  *
- * Initialize the virtual device afterward.
+ * Initialize this virtual device afterward.
  */
-#define ANGLE_INPUT_INIT_PRIORITY 50
+#define ANGLE_INPUT_INIT_PRIORITY 95
 
-/*
- * Runtime data for the virtual input device.
- */
 struct angle_input_data {
     int32_t pending_x;
     int32_t pending_y;
@@ -42,9 +39,6 @@ struct angle_input_data {
     struct angle_remainder remainder;
 };
 
-/*
- * Configuration for the virtual device.
- */
 struct angle_input_config {
     const struct device *source;
     int32_t angle_deg;
@@ -53,11 +47,8 @@ struct angle_input_config {
 /*
  * Receive movement events from PMW3610.
  *
- * The physical sensor reports relative X and Y
- * movement as separate events.
- *
- * Wait for the synchronized event before applying
- * the two-dimensional rotation.
+ * Accumulate X and Y until a synchronized
+ * report is received.
  */
 static void angle_input_callback(
     struct input_event *event,
@@ -89,8 +80,7 @@ static void angle_input_callback(
     }
 
     /*
-     * Wait until the complete input report
-     * has been received.
+     * Wait for the complete XY report.
      */
     if (!event->sync) {
         return;
@@ -100,11 +90,8 @@ static void angle_input_callback(
     int32_t corrected_y = 0;
 
     /*
-     * Rotate the complete XY vector clockwise
-     * by 10 degrees.
-     *
-     * angle_math.h preserves fractional
-     * remainders between reports.
+     * Clockwise 10-degree rotation.
+     * Fractional movement is accumulated.
      */
     angle_rotate_10(
         data->pending_x,
@@ -114,14 +101,11 @@ static void angle_input_callback(
         &data->remainder
     );
 
-    /*
-     * Clear accumulated raw movement.
-     */
     data->pending_x = 0;
     data->pending_y = 0;
 
     /*
-     * Forward corrected coordinates through
+     * Forward corrected coordinates using
      * the virtual input device.
      *
      * X: sync = false
@@ -153,10 +137,8 @@ static void angle_input_callback(
 }
 
 /*
- * Initialize the virtual input device.
- *
- * The physical PMW3610 must already
- * be initialized and ready.
+ * Initialize the virtual input device
+ * after its physical PMW3610 source.
  */
 static int angle_input_init(
     const struct device *dev)
@@ -177,8 +159,7 @@ static int angle_input_init(
 }
 
 /*
- * Create one virtual device for each enabled
- * zmk,angle-input Devicetree instance.
+ * Create virtual input devices.
  *
  * Current implementation supports
  * clockwise 10-degree correction only.
