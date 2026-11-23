@@ -18,22 +18,23 @@
 #include <zephyr/logging/log.h>
 
 #include <errno.h>
+#include <stdint.h>
 
 #include "angle_math.h"
 
-LOG_MODULE_REGISTER(
-    zmk_angle_input,
-    LOG_LEVEL_INF
-);
+LOG_MODULE_REGISTER(zmk_angle_input, LOG_LEVEL_INF);
 
 /*
- * Initialize after the PMW3610 driver.
+ * PMW3610 initializes at POST_KERNEL priority 33
+ * in the current build.
  *
- * PMW3610 currently initializes at
- * POST_KERNEL priority 33.
+ * Initialize the virtual device afterward.
  */
 #define ANGLE_INPUT_INIT_PRIORITY 50
 
+/*
+ * Runtime data for the virtual input device.
+ */
 struct angle_input_data {
     int32_t pending_x;
     int32_t pending_y;
@@ -41,13 +42,22 @@ struct angle_input_data {
     struct angle_remainder remainder;
 };
 
+/*
+ * Configuration for the virtual device.
+ */
 struct angle_input_config {
     const struct device *source;
     int32_t angle_deg;
 };
 
 /*
- * Receive X/Y movement from the sensor.
+ * Receive movement events from PMW3610.
+ *
+ * The physical sensor reports relative X and Y
+ * movement as separate events.
+ *
+ * Wait for the synchronized event before applying
+ * the two-dimensional rotation.
  */
 static void angle_input_callback(
     struct input_event *event,
@@ -59,23 +69,28 @@ static void angle_input_callback(
         return;
     }
 
-    struct angle_input_data *data =
-        virtual_dev->data;
+    struct angle_input_data *data = virtual_dev->data;
 
     if (event->type != INPUT_EV_REL) {
         return;
     }
 
-    if (event->code == INPUT_REL_X) {
+    switch (event->code) {
+    case INPUT_REL_X:
         data->pending_x += event->value;
-    } else if (event->code == INPUT_REL_Y) {
+        break;
+
+    case INPUT_REL_Y:
         data->pending_y += event->value;
-    } else {
+        break;
+
+    default:
         return;
     }
 
     /*
-     * Wait for the synchronized report.
+     * Wait until the complete input report
+     * has been received.
      */
     if (!event->sync) {
         return;
@@ -85,8 +100,11 @@ static void angle_input_callback(
     int32_t corrected_y = 0;
 
     /*
-     * Clockwise 10-degree rotation.
-     * Preserve fractional movement.
+     * Rotate the complete XY vector clockwise
+     * by 10 degrees.
+     *
+     * angle_math.h preserves fractional
+     * remainders between reports.
      */
     angle_rotate_10(
         data->pending_x,
@@ -96,12 +114,18 @@ static void angle_input_callback(
         &data->remainder
     );
 
+    /*
+     * Clear accumulated raw movement.
+     */
     data->pending_x = 0;
     data->pending_y = 0;
 
     /*
-     * Forward corrected X/Y values
-     * using the virtual device.
+     * Forward corrected coordinates through
+     * the virtual input device.
+     *
+     * X: sync = false
+     * Y: sync = true
      */
     int ret_x = input_report_rel(
         virtual_dev,
@@ -121,27 +145,31 @@ static void angle_input_callback(
 
     if (ret_x < 0 || ret_y < 0) {
         LOG_WRN(
-            "Failed to forward corrected motion"
+            "Failed to forward corrected XY movement: X=%d Y=%d",
+            ret_x,
+            ret_y
         );
     }
 }
 
 /*
- * Initialize virtual input device.
+ * Initialize the virtual input device.
+ *
+ * The physical PMW3610 must already
+ * be initialized and ready.
  */
 static int angle_input_init(
     const struct device *dev)
 {
-    const struct angle_input_config *config =
-        dev->config;
+    const struct angle_input_config *config = dev->config;
 
     if (!device_is_ready(config->source)) {
-        LOG_ERR("Source sensor not ready");
+        LOG_ERR("PMW3610 source sensor not ready");
         return -ENODEV;
     }
 
     LOG_INF(
-        "Angle input initialized: %d degrees",
+        "Virtual trackball initialized, correction=%d degrees",
         config->angle_deg
     );
 
@@ -149,7 +177,11 @@ static int angle_input_init(
 }
 
 /*
- * Instantiate virtual input devices.
+ * Create one virtual device for each enabled
+ * zmk,angle-input Devicetree instance.
+ *
+ * Current implementation supports
+ * clockwise 10-degree correction only.
  */
 #define ANGLE_INPUT_DEFINE(n)                             \
                                                          \
@@ -189,6 +221,4 @@ static int angle_input_init(
         angle_input_callback_##n                         \
     );
 
-DT_INST_FOREACH_STATUS_OKAY(
-    ANGLE_INPUT_DEFINE
-)
+DT_INST_FOREACH_STATUS_OKAY(ANGLE_INPUT_DEFINE)
